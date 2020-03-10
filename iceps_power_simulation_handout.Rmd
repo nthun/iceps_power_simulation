@@ -1,0 +1,179 @@
+---
+title: "Using Monte Carlo simulation to estimate required sample size in R"
+author: "Tamas Nagy"
+date: "3/10/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, message = FALSE, warning = FALSE}
+# Install uninstalled packages
+if(!require(tidyverse)) install.packages("tidyverse")
+if(!require(lmerTest)) install.packages("lmerTest")
+
+# Load packages
+library(tidyverse) # 
+library(lmerTest)
+theme_set(theme_light())
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Create a prototype
+## Define the hypothesis and make a prediction!
+
+We hypothesize that the treatment will decrease the pain over time. Therefore we assume that at the baseline, we will have a similar value for pain, but for the post measurement, pain will be lower in the treatment group.
+
+## The formula that will evaluate our hypothesis
+
+Start with a simple study:
+We have a treatment and control condition, and a 100 grade scale for pain as the outcome
+We have a pre and a post measurement
+The way we can write this formula down is:
+
+`pain ~ group * time`
+
+So now we know that we need: 
+
+- An outcome, with 100 levels. Let's assume that this variable have a normal distribution.  
+- Group variable with 2 levels: treatment and control.  
+- Time variable with 2 levels: pre and post.
+
+## Effect size
+
+We need to figure out, how different will be the post measurement in the treatment group. 
+For that, we need to come up with the Smallest Effect Size of Interest (SESOI). It is very easy, because we can define it on the original original scale (1-100), so we don't have to deal with effect sizes, etc. Let's say, that we assume that the SESOI as 5 units.
+Let's generate the distribution of this variable!  
+
+## Generate the outcome variable
+
+We need to decide the mean and standard deviation of this variable.
+Usually, we can find these values in journal articles, or make an educated guess.
+Let's set the mean pain to 50, with a standard deviation of 10.
+A great thing about this approach is that we can define any distribution, not just normal.
+
+```{r proto outcome distribution}
+pain_distribution <-    
+  dnorm(x = 1:100, # Vecor of quantiles 1 to 100
+        mean = 50, # Mean
+        sd = 10) # SD 
+
+# Let's visualize this distribution
+# To do that, we need to put this into a data frame
+tibble(x = 1:100, 
+       y = pain_distribution) %>% 
+  ggplot() +
+  aes(x = x, y = y) +
+  geom_line() +
+  labs(title = "Theoretical distribution of the pain variable")
+```
+
+Now let's use this distribution to generate 1000 random data points!
+
+```{r proto random variable}
+pain_random <-
+  sample(x = 1:100, # The possible values to choose from
+       size = 1000, # How many values we want? 
+       prob = pain_distribution, # The values will be normally distributed
+       replace = TRUE) # Can we choose the same value more than one?
+
+qplot(pain_random, bins = 30) +
+  labs(title = "Generated random pain measurements")
+```
+
+According to the hypothesis, we should break down this 1000 values into 4 cells. Pre - control, post-control, pre-treatment, post-treatment. The post treatment needs to have a lower value by 5 units.
+To do this, we will create a data frame:  
+
+- we use the pain_random variable
+- we create the groupings
+- we subtract the SESOI (that we defined as 5 units) from the post-treatment condition.
+
+```{r proto dataset}
+# Define the groups
+groups <- c("control_pre", "control_post", "treatment_pre", "treatment_post")
+
+# Create a dataframe 
+pain_df <-  
+  tibble(id = gl(n = 500, k = 2), # Generate the id (everyone has 2 measurements)
+         pain = pain_random, # Use the random pain variable that we generated
+         group = gl(n = 4, k = 1, length = 1000, labels = groups) # Assign each case to one of the four groups
+         ) %>% 
+    # Subtract 5 from the pain values where the in the treatment_post group
+    mutate(pain = if_else(condition = group == "treatment_post", 
+                          true = pain - 5L, 
+                          false = pain)) %>%
+    # The group variable should be separated into group and time
+    separate(col = group, 
+             into = c("group", "time"), 
+             sep = "_") %>%  
+    # Let's set the group levels
+    mutate(group = fct_relevel(group, "control"),
+           time = fct_relevel(time, "pre")) 
+```
+
+```{r proto dataviz}
+
+# This is how our dataframe will look like
+pain_df
+
+# We can also visualize the difference between the groups
+pain_df %>% 
+  group_by(group, time) %>% 
+  summarise(avg_pain = mean(pain),
+            se_pain = sd(pain)/sqrt(n())) %>% 
+  ggplot() +
+  aes(x = time, y = avg_pain, color = group, group = group,
+      ymin = avg_pain - se_pain, ymax = avg_pain + se_pain) +
+  geom_line(size = 1.2) +
+  geom_linerange(size = 1.2, color = "black", alpha = .5) +
+  geom_point(size = 5)
+
+```
+
+
+## See if there is a significant difference
+
+We will use a mixed-effects model with random intercept, and particiupant id as the grouping variable.
+
+```{r proto stats}
+
+lmer(pain ~ group * time + (1|id), data = pain_df) %>% 
+  summary()
+```
+
+As we can see, there is a significant interaction effect, and the difference is very close to the 5 units that we wanted. However, we had 500 participants, and we need to figure out if this effect is detectible with smaller effect sizes.
+To do that, we need to break down this previous prototype into substitutible elements.
+
+-----------------------------
+
+# 2. Generalizing
+
+In order to try out several different effect sizes, we need to create a function that generates the data with different parameters (sucha as the sample size), and evaluates if the result is significant or not. 
+
+```{r}
+
+generate_100 <- function(n, mean, sd){
+  
+  sample(x = 1:100, # The possible values to choose from
+         size = n, # How many values we want? 
+         prob = dnorm(x = 1:100, # Vecor of quantiles 1 to 100
+                      mean = mean, # Mean
+                      sd = sd), # the values will be normally distributed
+         replace = TRUE) # Can we choose the same value more than one?
+      
+}
+
+# Try out the function, and generate data that is centered at 30 and has an sd of 10
+generate_100(10000, 30, 10) %>% 
+  qplot(bins = 30) +
+  coord_cartesian(xlim = c(0, 100))
+
+```
+
+
+
+
+# Creating the simulation matrix 
+
+
+
