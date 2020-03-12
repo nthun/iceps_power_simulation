@@ -11,12 +11,19 @@ editor_options:
 # Install uninstalled packages
 if(!require(tidyverse)) install.packages("tidyverse")
 if(!require(lmerTest)) install.packages("lmerTest")
+if(!require(broom.mixed)) install.packages("broom.mixed")
+if(!require(devtools)) install.packages("devtools")
+if(!require(faux)) devtools::install_github("debruine/faux")
 
 # Load packages
 library(tidyverse) # 
 library(lmerTest)
-theme_set(theme_light())
+library(broom)
+library(faux)
+
 knitr::opts_chunk$set(echo = TRUE)
+
+theme_set(theme_light()) # Set plot theme
 ```
 
 # 1. Create a prototype
@@ -78,7 +85,7 @@ pain_random <-
        replace = TRUE) # Can we choose the same value more than one?
 
 qplot(pain_random, bins = 30) +
-  labs(title = "Generated random pain measurements")
+  labs(title = "1000 generated random pain measurements")
 ```
 
 According to the hypothesis, we should break down this 1000 values into 4 cells. Pre - control, post-control, pre-treatment, post-treatment. The post treatment needs to have a lower value by 5 units.
@@ -109,12 +116,12 @@ pain_df <-
     # Let's set the group levels
     mutate(group = fct_relevel(group, "control"),
            time = fct_relevel(time, "pre")) 
-```
-
-```{r proto dataviz}
 
 # This is how our dataframe will look like
 pain_df
+```
+
+```{r proto dataviz}
 
 # We can also visualize the difference between the groups
 pain_df %>% 
@@ -146,20 +153,26 @@ To do that, we need to break down this previous prototype into substitutible ele
 
 -----------------------------
 
+It would be possible to run the previous the previous script several times, and see how the significance changes if we change the sample size or the standard deviation of the outcome measure. However, we could only say anything meaningful about each scenario, if we had several replications. Therefore, we should run the previous steps several times, and record the results. Sounds a tedious job! Fortunately, we can automate it!
+
+
 # 2. Generalizing
 
-In order to try out several different effect sizes, we need to create a function that generates the data with different parameters (sucha as the sample size), and evaluates if the result is significant or not. 
+In order to try out several different sample sizes, we need to create a function that generates the data with different parameters (such as the sample size), and evaluates if the result is significant or not. 
 
 ```{r}
-
+# A function that generates a variable with random normal diu
+# n: the number of values needed
+# mean: theoretical mean
+# sd: theoretical sd
 generate_100 <- function(n, mean, sd){
   
   sample(x = 1:100, # The possible values to choose from
          size = n, # How many values we want? 
          prob = dnorm(x = 1:100, # Vecor of quantiles 1 to 100
-                      mean = mean, # Mean
-                      sd = sd), # the values will be normally distributed
-         replace = TRUE) # Can we choose the same value more than one?
+                      mean = mean, 
+                      sd = sd), # The values will be normally distributed
+         replace = TRUE) # The same value can be chosen more than once
       
 }
 
@@ -170,10 +183,208 @@ generate_100(10000, 30, 10) %>%
 
 ```
 
+Now, let's make a function that generates a whole data frame! This way, we can generate as many replications as we want.
+To do this, we use the powerful feature of nested datasets. This means that each cell can hold a list element. For e.g. this way we can keep dataframes inside the cells of dataframes!
+
+
+```{r}
+# A function that generates a dataset based on theoretical parameters
+# n: number of observations
+# means: a vector of theoretical means for the groups
+# sds: a vector of theoretical sds for the groups
+# groups: a vecotor of group names
+# times: the number of measurements for each group
+
+generate_dataset <- function(n, means, sds, groups, times){
+  
+  # First we generate all possible combinations of groups and times. This will automate the variable name generation
+crossing(group = groups, 
+         time = 1:times) %>% 
+  # Then we add the sample size and the theoretical parameters
+  mutate(n = n, 
+         t_mean = means, 
+         t_sd = sds) %>% 
+  # Then we generate data into the cells as nested list values
+  mutate(value = pmap(list(n, t_mean, t_sd),
+                     ~generate_100(..1, ..2, ..3)),
+         # Generate ids for each data point. This will make it possible to connect data
+         # ponits like they were coming from the same person
+         id = map2(group, n, 
+                   ~paste(.x, 1:.y, sep = "_"))) %>% 
+  # Remove the theoretical parameters, but keep the sample size
+  select(-t_mean, -t_sd) %>% 
+  # Then unpack the data, that will be in long format
+  unnest(c(value, id))
+  
+}
+
+```
+
+## Let's verify that the function  works as intended
+
+- First we check if it can create a similar dataset than before
+- Then we also check if it works with more than two groups and measurements
+
+
+```{r}
+
+trial_2x2 <-
+  generate_dataset(n = 1000, 
+                   means = c(50, 50, 50, 45), 
+                   sds = 10,
+                   groups = c("control", "treatment"),
+                   times = 2)
+
+trial_2x2 %>% 
+  group_by(group, time) %>% 
+  summarise(avg_pain = mean(value),
+            sd_pain = sd(value),
+            n = n())
+
+# Works!
+
+trial_2x3 <-
+  generate_dataset(n = 1000, 
+                   means = c(50, 50, 50, 50, 45, 40), 
+                   sds = 10,
+                   groups = c("control", "treatment"),
+                   times = 3)
+
+trial_2x3 %>% 
+  group_by(group, time) %>% 
+  summarise(avg_pain = mean(value),
+            sd_pain = sd(value),
+            n = n())
+
+# Works!
+
+trial_3x2 <-
+  generate_dataset(n = 1000, 
+                   means = c(50, 50, 50, 45, 50, 40), 
+                   sds = c(10, 9, 9, 11, 8, 12),
+                   groups = c("control", "treatment1", "treatment2"),
+                   times = 2)
+
+trial_3x2 %>% 
+  group_by(group, time) %>% 
+  summarise(avg_pain = mean(value),
+            sd_pain = sd(value),
+            n = n())
+
+# Works!
+
+```
+
+It works pretty well in all circumstances! It is important to make it sure that the length of the factors is the same as grous x times, otherwise, R throws an error. 
 
 
 
-# Creating the simulation matrix 
+## Creating the simulation matrix 
+
+To be able to create replications for each scenario that we test, we need to define the sample sizes, and also the number of datasets for each sample size.
+The more datasets we have for each sample size, the more reliable our estimation gets.
+Each dataset should be numbered, just as each participant in the datasets. Again, we can use crossing to do this.
+
+```{r}
+
+crossing(group_size = seq(from = 30, to = 300, by = 30),
+         replication = 1:50) %>% 
+  mutate(dataset = map(group_size, 
+                       ~generate_dataset(n = .x,
+                                         means = c(50, 50, 50, 45), 
+                                         sds = 10,
+                                         groups = c("control", "treatment"),
+                                         times = 2)))
+```
+
+## Embracing good (better) practices
+It is not a good practice to hardcode the parameters into functions.
+The good practice is to define the parameters in the beginning of the script, than we can feed the variables to the function. This way you only need to change your script at one place. Let's do that.
+Also, please notice that the simulation now is starting to require more computational power. If you set a high number of replications, and wide range of sample sizes, it may get quite slow. For now, let's keep the number of replications low, so we don't need to wait for too long to run our code. We will have some tricks to speed up the code later!
+
+
+```{r}
+# Let's keep the parameters separate from the functions!
+
+# These parameters define the simulation matrix
+sample_increment = 30 # This defines the steps in the sample size 
+max_sample = 150 # The maximum sample size
+replications = 50 # The number of replications for each scenario (sample size)
+
+# These parameters define the datasets
+means = c(50, 50, 50, 45) # The mean for the groups
+sds = 10 # The sd for the measurements. Can be a vector too
+groups = c("control", "treatment") # The name of the groups
+times = 2 # The number of repeated measurements
+
+# These parameters define the evaluation of the results
+significance = .05 # The treshold for false positives (we will need this later)
+critical_power = .80 # What is the minimal statistical power that we aim for
+
+```
+
+This is how we run the function without hard coded parameters
+
+```{r }
+sim_data <-
+  crossing(group_size = seq(from = sample_increment, 
+                            to = max_sample, 
+                            by = sample_increment),
+           dataset = 1:replications) %>% 
+  mutate(data = map(group_size, ~generate_dataset( n = .x,
+                                                   means = means, 
+                                                   sds = sds,
+                                                   groups = groups,
+                                                   times = times)))
+
+```
+
+Now, we need to test our hypothesis on each generated dataset. Again, we can use the nested structure, so we will store the model for each dataset in a variable of the dataframe.
+
+```{r, warning=FALSE, message=FALSE}
+
+sim_result <-
+  sim_data %>% 
+  mutate(model = map(data, 
+                     # Run the formula to test the hypothesis
+                     ~lmer(value ~ group * time + (1|id), 
+                           data = .x) %>% 
+                     # put the results into a tidy dataframe
+                      broom.mixed::tidy()
+                     ))
+
+sim_result %>% 
+    # Extract the p value of the interaction from the model
+    mutate(p = map_dbl(model,
+                       ~filter(.x, str_detect(term, "^group.*:time")) %>% 
+                        pull(p.value)),
+   # Generate a variable that evaluates if the significance is under the treshold
+           sig = p <= .05) %>% 
+  group_by(group_size) %>% 
+  summarise(power = mean(sig))
+  
+
+
+  
+```
+
+# TODO: Why do we get the "boundary (singular) fit: see ?isSingular" warning?
+
+
+```{r}
+sim_data %>%
+  slice(1) %>% 
+  unnest(data) %>% 
+  lmer(value ~ group * time + (1|id), data = .) %>% 
+  summary()
+
+temp <- 
+sim_data %>%
+  slice(1) %>% 
+  unnest(data) %>% 
+  spread(time, value, sep = "_")
+  cor.test(x = temp$time_1, y = temp$time_2)
+```
 
 
 
