@@ -308,6 +308,7 @@ Also, please notice that the simulation now is starting to require more computat
 
 # These parameters define the simulation matrix
 sample_increment = 30 # This defines the steps in the sample size 
+min_sample = 30 # The minimum sample size
 max_sample = 150 # The maximum sample size
 replications = 50 # The number of replications for each scenario (sample size)
 
@@ -327,7 +328,7 @@ This is how we run the function without hard coded parameters
 
 ```{r }
 sim_data <-
-  crossing(group_size = seq(from = sample_increment, 
+  crossing(group_size = seq(from = min_sample, 
                             to = max_sample, 
                             by = sample_increment),
            dataset = 1:replications) %>% 
@@ -368,12 +369,12 @@ sim_result %>%
   
 ```
 
-# TODO: Why do we get the "boundary (singular) fit: see ?isSingular" warning?
+# TODO: Replace own dataset function with sim_design() from faux?
 
 
 ```{r}
-sim_data %>%
-  slice(1) %>% 
+sim_data %>% 
+  slice(50) %>% 
   unnest(data) %>% 
   lmer(value ~ group * time + (1|id), data = .) %>% 
   summary()
@@ -383,7 +384,9 @@ sim_data %>%
   slice(1) %>% 
   unnest(data) %>% 
   spread(time, value, sep = "_")
-  cor.test(x = temp$time_1, y = temp$time_2)
+  
+cor.test(x = temp$time_1, y = temp$time_2)
+
 ```
 
 
